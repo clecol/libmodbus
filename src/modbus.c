@@ -42,13 +42,6 @@ const unsigned int libmodbus_version_micro = LIBMODBUS_VERSION_MICRO;
 /* Max between RTU and TCP max adu length (so TCP) */
 #define MAX_MESSAGE_LENGTH 260
 
-/* 3 steps are used to parse the query */
-typedef enum {
-    _STEP_FUNCTION,
-    _STEP_META,
-    _STEP_DATA
-} _step_t;
-
 const char *modbus_strerror(int errnum) {
     switch (errnum) {
     case EMBXILFUN:
@@ -102,7 +95,7 @@ int modbus_flush(modbus_t *ctx)
 }
 
 /* Computes the length of the expected response */
-static unsigned int compute_response_length_from_request(modbus_t *ctx, uint8_t *req)
+static unsigned int compute_response_length(modbus_t *ctx, uint8_t *req)
 {
     int length;
     int offset;
@@ -134,7 +127,7 @@ static unsigned int compute_response_length_from_request(modbus_t *ctx, uint8_t 
         length = 5;
     }
 
-    return offset + length + ctx->backend->checksum_length;
+    return length + offset + ctx->backend->checksum_length;
 }
 
 /* Sends a request/response */
@@ -186,14 +179,21 @@ typedef enum {
     MSG_CONFIRMATION
 } msg_type_t;
 
-/* Computes the length to read after the function received */
-static uint8_t compute_meta_length_after_function(int function,
-                                                  msg_type_t msg_type)
+/* Computes the header length (to reach the real data) */
+static uint8_t compute_header_length(int function, msg_type_t msg_type)
 {
     int length;
 
-    if (msg_type == MSG_INDICATION) {
-        if (function <= _FC_WRITE_SINGLE_REGISTER) {
+    if (msg_type == MSG_CONFIRMATION) {
+        if (function == _FC_REPORT_SLAVE_ID) {
+            length = 1;
+        } else {
+            /* Should never happen, the other header lengths are precomputed */
+            abort();
+        }
+    } else /* MSG_INDICATION */ {
+        if (function <= _FC_WRITE_SINGLE_COIL ||
+            function == _FC_WRITE_SINGLE_REGISTER) {
             length = 4;
         } else if (function == _FC_WRITE_MULTIPLE_COILS ||
                    function == _FC_WRITE_MULTIPLE_REGISTERS) {
@@ -201,54 +201,27 @@ static uint8_t compute_meta_length_after_function(int function,
         } else if (function == _FC_READ_AND_WRITE_REGISTERS) {
             length = 9;
         } else {
-            /* _FC_READ_EXCEPTION_STATUS, _FC_REPORT_SLAVE_ID */
             length = 0;
         }
-    } else {
-        /* MSG_CONFIRMATION */
-        switch (function) {
-        case _FC_WRITE_SINGLE_COIL:
-        case _FC_WRITE_SINGLE_REGISTER:
-        case _FC_WRITE_MULTIPLE_COILS:
-        case _FC_WRITE_MULTIPLE_REGISTERS:
-            length = 4;
-            break;
-        default:
-            length = 1;
-        }
     }
-
     return length;
 }
 
-/* Computes the length to read after the meta information (address, count, etc) */
-static int compute_data_length_after_meta(modbus_t *ctx, uint8_t *msg, msg_type_t msg_type)
+/* Computes the length of the data to write in the request */
+static int compute_data_length(modbus_t *ctx, uint8_t *msg)
 {
     int function = msg[ctx->backend->header_length];
     int length;
 
-    if (msg_type == MSG_INDICATION) {
-        switch (function) {
-        case _FC_WRITE_MULTIPLE_COILS:
-        case _FC_WRITE_MULTIPLE_REGISTERS:
-            length = msg[ctx->backend->header_length + 5];
-            break;
-        case _FC_READ_AND_WRITE_REGISTERS:
-            length = msg[ctx->backend->header_length + 9];
-            break;
-        default:
-            length = 0;
-        }
-    } else {
-        /* MSG_CONFIRMATION */
-        if (function <= _FC_READ_INPUT_REGISTERS ||
-            function == _FC_REPORT_SLAVE_ID ||
-            function == _FC_READ_AND_WRITE_REGISTERS) {
-            length = msg[ctx->backend->header_length + 1];
-        } else {
-            length = 0;
-        }
-    }
+    if (function == _FC_WRITE_MULTIPLE_COILS ||
+        function == _FC_WRITE_MULTIPLE_REGISTERS) {
+        length = msg[ctx->backend->header_length + 5];
+    } else if (function == _FC_REPORT_SLAVE_ID) {
+        length = msg[ctx->backend->header_length + 1];
+    } else if (function == _FC_READ_AND_WRITE_REGISTERS) {
+        length = msg[ctx->backend->header_length + 9];
+    } else
+        length = 0;
 
     length += ctx->backend->checksum_length;
 
@@ -258,6 +231,9 @@ static int compute_data_length_after_meta(modbus_t *ctx, uint8_t *msg, msg_type_
 
 /* Waits a response from a modbus server or a request from a modbus client.
    This function blocks if there is no replies (3 timeouts).
+
+   The argument msg_length_computed must be set to MSG_LENGTH_UNDEFINED if
+   undefined.
 
    The function shall return the number of received characters and the received
    message in an array of uint8_t if successful. Otherwise it shall return -1
@@ -269,122 +245,189 @@ static int compute_data_length_after_meta(modbus_t *ctx, uint8_t *msg, msg_type_
    - read() or recv() error codes
 */
 
-static int receive_msg(modbus_t *ctx, uint8_t *msg, msg_type_t msg_type)
+static int receive_msg(modbus_t *ctx, int msg_length_computed,
+                       uint8_t *msg, msg_type_t msg_type)
 {
-    int rc;
-    fd_set rfds;
-    struct timeval tv;
-    int length_to_read;
-    uint8_t *p_msg;
-    int msg_length = 0;
-    _step_t step;
+  int rtai = ctx->backend->backend_type == _MODBUS_BACKEND_TYPE_RTAI;
+  int s_rc;
+  int read_rc;
+  fd_set rfds;
+  struct timeval tv;
+  int length_to_read;
+  uint8_t *p_msg;
+  enum { FUNCTION, DATA, COMPLETE };
+  int state;
+  int msg_length = 0;
 
-    if (ctx->debug) {
-        if (msg_type == MSG_INDICATION) {
-            printf("Waiting for a indication...\n");
-        } else {
-            printf("Waiting for a confirmation...\n");
-        }
+  printf("msg_length_computed = %d\n", msg_length_computed);
+  
+  if (ctx->debug) {
+    if (msg_type == MSG_INDICATION) {
+      printf("Waiting for a indication");
+    } else {
+      printf("Waiting for a confirmation");
     }
 
-    /* Add a file descriptor to the set */
+    if (msg_length_computed == MSG_LENGTH_UNDEFINED)
+      printf("...\n");
+    else
+      printf(" (%d bytes)...\n", msg_length_computed);
+  }
+
+  /* Add a file descriptor to the set */
+  if (!rtai) {
     FD_ZERO(&rfds);
     FD_SET(ctx->s, &rfds);
+  }
 
-    /* We need to analyse the message step by step.  At the first step, we want
-     * to reach the function code because all packets contain this
+  if (msg_length_computed == MSG_LENGTH_UNDEFINED) {
+    if (!rtai) {
+      /* Wait for a message */
+      tv.tv_sec = 60;
+      tv.tv_usec = 0;
+    }
+
+    /* The message length is undefined (request receiving) so we need to
+     * analyse the message step by step.  At the first step, we want to
+     * reach the function code because all packets contains this
      * information. */
-    step = _STEP_FUNCTION;
-    length_to_read = ctx->backend->header_length + 1;
+    state = FUNCTION;
+    msg_length_computed = ctx->backend->header_length + 1;
+  }
+  else {
+    if (!rtai) {
+      tv.tv_sec = ctx->timeout_begin.tv_sec;
+      tv.tv_usec = ctx->timeout_begin.tv_usec;
+    }
+    state = COMPLETE;
+  }
 
-    if (msg_type == MSG_INDICATION) {
-        /* Wait for a message, we don't know when the message will be
-         * received */
-        /* FIXME Not infinite */
-        tv.tv_sec = 60;
-        tv.tv_usec = 0;
+  length_to_read = msg_length_computed;
+
+  if (!rtai) {
+    s_rc = ctx->backend->select(ctx, &rfds, &tv, length_to_read);
+    
+    if (s_rc == -1) {
+      return -1;
+    }
+  }
+  else // for rtai our loop condition is whether or not our message
+    // is complete
+    s_rc = msg_length != msg_length_computed;
+      
+  p_msg = msg;
+  while (s_rc) {
+    //printf("in s_rc loop, msg_length = %d\n", msg_length);
+    read_rc = ctx->backend->recv(ctx, p_msg, length_to_read);
+    //printf("READ RC == %d\n", read_rc);
+
+    // if rtai selected, read_rc:
+    // ==0:  no bytes received, keep retrying
+    // > 0: some bytes received, retry if we haven't received entire message
+    // < 0: some error occured
+    if (rtai && read_rc < 0) {
+      _error_print(ctx, "read");
+      modbus_close(ctx);
+    }
+    
+    if (!rtai) {
+      if (read_rc == 0) {
+        errno = ECONNRESET;
+        read_rc = -1;
+      }
+
+      if (read_rc == -1) {
+        _error_print(ctx, "read");
+        if (ctx->error_recovery && (errno == ECONNRESET ||
+                                    errno == ECONNREFUSED)) {
+          modbus_close(ctx);
+          modbus_connect(ctx);
+          /* Could be removed by previous calls */
+          errno = ECONNRESET;
+          return -1;
+        }
+        return -1;
+      }
+    }
+
+    /* Sums bytes received */
+    msg_length += read_rc;
+    
+    //Display the hex code of each character received
+    if (ctx->debug && !rtai) {
+      int i;
+      for (i=0; i < read_rc; i++)
+        printf("<%.2X>", p_msg[i]);
+    }
+
+    if (msg_length < msg_length_computed) {
+      /* Message incomplete */
+      length_to_read = msg_length_computed - msg_length;
     } else {
-        tv.tv_sec = ctx->timeout_begin.tv_sec;
-        tv.tv_usec = ctx->timeout_begin.tv_usec;
+      switch (state) {
+      case FUNCTION:
+        /* Function code position */
+        length_to_read = compute_header_length(
+                                               msg[ctx->backend->header_length],
+                                               msg_type);
+        msg_length_computed += length_to_read;
+        /* It's useless to check the value of
+           msg_length_computed in this case (only
+           defined values are used). */
+        if (length_to_read != 0) {
+          state = DATA;
+          break;
+        } /* else switch straight to DATA */
+      case DATA:
+        length_to_read = compute_data_length(ctx, msg);
+        msg_length_computed += length_to_read;
+        if (msg_length_computed > ctx->backend->max_adu_length) {
+          errno = EMBBADDATA;
+          _error_print(ctx, "too many data");
+          return -1;
+        }
+        state = COMPLETE;
+        break;
+      case COMPLETE:
+        length_to_read = 0;
+        break;
+      }
     }
 
-    p_msg = msg;
-    while (length_to_read != 0) {
-        rc = ctx->backend->select(ctx, &rfds, &tv, length_to_read);
-        if (rc == -1) {
-            return -1;
-        }
+    /* Moves the pointer to receive other data */
+    p_msg = &(p_msg[read_rc]);
 
-        rc = ctx->backend->recv(ctx, p_msg, length_to_read);
-        if (rc == 0) {
-            errno = ECONNRESET;
-            rc = -1;
-        }
+    if (!rtai) { // perform select
+      if (length_to_read > 0) {
+        /* If no character at the buffer wait
+           TIME_OUT_END_OF_TRAME before to generate an error. */
+        tv.tv_sec = ctx->timeout_end.tv_sec;
+        tv.tv_usec = ctx->timeout_end.tv_usec;
 
-        if (rc == -1) {
-            _error_print(ctx, "read");
-            if (ctx->error_recovery && (errno == ECONNRESET ||
-                                        errno == ECONNREFUSED)) {
-                modbus_close(ctx);
-                modbus_connect(ctx);
-                /* Could be removed by previous calls */
-                errno = ECONNRESET;
-            }
-            return -1;
+        s_rc = ctx->backend->select(ctx, &rfds, &tv, length_to_read);
+        if (s_rc == -1) {
+          return -1;
         }
-
-        /* Display the hex code of each character received */
-        if (ctx->debug) {
-            int i;
-            for (i=0; i < rc; i++)
-                printf("<%.2X>", p_msg[i]);
-        }
-
-        /* Moves the pointer to receive other data */
-        p_msg = &(p_msg[rc]);
-        /* Sums bytes received */
-        msg_length += rc;
-        /* Computes remaining bytes */
-        length_to_read -= rc;
-
-        if (length_to_read == 0) {
-            switch (step) {
-            case _STEP_FUNCTION:
-                /* Function code position */
-                length_to_read = compute_meta_length_after_function(
-                    msg[ctx->backend->header_length],
-                    msg_type);
-                if (length_to_read != 0) {
-                    step = _STEP_META;
-                    break;
-                } /* else switches straight to the next step */
-            case _STEP_META:
-                length_to_read = compute_data_length_after_meta(
-                    ctx, msg, msg_type);
-                if ((msg_length + length_to_read) > ctx->backend->max_adu_length) {
-                    errno = EMBBADDATA;
-                    _error_print(ctx, "too many data");
-                    return -1;
-                }
-                step = _STEP_DATA;
-                break;
-            default:
-                break;
-            }
-        }
-
-        if (length_to_read > 0) {
-            /* If no character at the buffer wait
-               TIME_OUT_END_OF_TRAME before raising an error. */
-            tv.tv_sec = ctx->timeout_end.tv_sec;
-            tv.tv_usec = ctx->timeout_end.tv_usec;
-        }
+      } else {
+        /* All chars are received */
+        s_rc = FALSE;
+      }
     }
+    else // if rtai connection, just retry on next iteration
+      s_rc = msg_length != msg_length_computed;
+  }
 
-    if (ctx->debug)
-        printf("\n");
+  // for rtai, print out p_msg once entire message is received
+  if (ctx->debug && rtai) {
+    int i;
+    for (i=0; i < msg_length; i++)
+      printf("<%.2X>", p_msg[i]);
+  }
 
-    return ctx->backend->check_integrity(ctx, msg, msg_length);
+  if (ctx->debug)
+    printf("\n");
+
+  return ctx->backend->check_integrity(ctx, msg, msg_length);
 }
 
 /* Receive the request from a modbus master, requires the socket file descriptor
@@ -399,7 +442,8 @@ int modbus_receive(modbus_t *ctx, int sockfd, uint8_t *req)
         ctx->s = sockfd;
     }
 
-    return receive_msg(ctx, req, MSG_INDICATION);
+    /* The length of the request to receive isn't known. */
+    return receive_msg(ctx, MSG_LENGTH_UNDEFINED, req, MSG_INDICATION);
 }
 
 /* Receives the response and checks values.
@@ -415,21 +459,14 @@ static int receive_msg_req(modbus_t *ctx, uint8_t *req, uint8_t *rsp)
     int rsp_length_computed;
     int offset = ctx->backend->header_length;
 
-    rc = receive_msg(ctx, rsp, MSG_CONFIRMATION);
-    if (rc == -1) {
-        return -1;
-    }
-
-    rsp_length_computed = compute_response_length_from_request(ctx, req);
-
-    /* Check length */
-    if (rc == rsp_length_computed ||
-        rsp_length_computed == MSG_LENGTH_UNDEFINED) {
+    rsp_length_computed = compute_response_length(ctx, req);
+    rc = receive_msg(ctx, rsp_length_computed, rsp, MSG_CONFIRMATION);
+    if (rc != -1) {
+        /* GOOD RESPONSE */
         int req_nb_value;
         int rsp_nb_value;
         int function = rsp[offset];
 
-        /* Check function code */
         if (function != req[offset]) {
             if (ctx->debug) {
                 fprintf(stderr,
@@ -440,7 +477,8 @@ static int receive_msg_req(modbus_t *ctx, uint8_t *req, uint8_t *rsp)
             return -1;
         }
 
-        /* Check the number of values is corresponding to the request */
+        /* The number of values is returned if it's corresponding
+         * to the request */
         switch (function) {
         case _FC_READ_COILS:
         case _FC_READ_DISCRETE_INPUTS:
@@ -484,26 +522,28 @@ static int receive_msg_req(modbus_t *ctx, uint8_t *req, uint8_t *rsp)
             errno = EMBBADDATA;
             rc = -1;
         }
-    } else if (rc == (offset + 2 + ctx->backend->checksum_length) &&
-               req[offset] == (rsp[offset] - 0x80)) {
+    } else if (errno == EMBUNKEXC) {
         /* EXCEPTION CODE RECEIVED */
 
-        int exception_code = rsp[offset + 1];
-        if (exception_code < MODBUS_EXCEPTION_MAX) {
-            errno = MODBUS_ENOBASE + exception_code;
-        } else {
-            errno = EMBBADEXC;
+        /* CRC must be checked here (not done in receive_msg) */
+        rc = ctx->backend->check_integrity(ctx, rsp,
+                                           _MODBUS_EXCEPTION_RSP_LENGTH);
+        if (rc == -1)
+            return -1;
+
+        /* Check for exception response.
+           0x80 + function is stored in the exception
+           response. */
+        if (0x80 + req[offset] == rsp[offset]) {
+            int exception_code = rsp[offset + 1];
+            if (exception_code < MODBUS_EXCEPTION_MAX) {
+                errno = MODBUS_ENOBASE + exception_code;
+            } else {
+                errno = EMBBADEXC;
+            }
+            _error_print(ctx, NULL);
+            return -1;
         }
-        _error_print(ctx, NULL);
-        rc = -1;
-    } else {
-        if (ctx->debug) {
-            fprintf(stderr,
-                    "Message length not corresponding to the computed length (%d != %d)\n",
-                    rc, rsp_length_computed);
-        }
-        errno = EMBBADDATA;
-        rc = -1;
     }
 
     return rc;
@@ -794,17 +834,15 @@ int modbus_reply(modbus_t *ctx, const uint8_t *req,
             rsp_length = ctx->backend->build_response_basis(&sft, rsp);
             rsp[rsp_length++] = nb << 1;
 
-            /* Write first.
-               10 and 11 are the offset of the first values to write */
-            for (i = address_write, j = 10; i < address_write + nb_write; i++, j += 2) {
-                mb_mapping->tab_registers[i] =
-                    (req[offset + j] << 8) + req[offset + j + 1];
-            }
-
-            /* and read the data for the response */
             for (i = address; i < address + nb; i++) {
                 rsp[rsp_length++] = mb_mapping->tab_registers[i] >> 8;
                 rsp[rsp_length++] = mb_mapping->tab_registers[i] & 0xFF;
+            }
+
+            /* 10 and 11 = first value */
+            for (i = address_write, j = 10; i < address_write + nb_write; i++, j += 2) {
+                mb_mapping->tab_registers[i] =
+                    (req[offset + j] << 8) + req[offset + j + 1];
             }
         }
     }
@@ -818,37 +856,6 @@ int modbus_reply(modbus_t *ctx, const uint8_t *req,
     }
 
     return send_msg(ctx, rsp, rsp_length);
-}
-
-int modbus_reply_exception(modbus_t *ctx, const uint8_t *req,
-                           unsigned int exception_code)
-{
-    int offset = ctx->backend->header_length;
-    int slave = req[offset - 1];
-    int function = req[offset];
-    uint8_t rsp[MAX_MESSAGE_LENGTH];
-    int rsp_length;
-    int dummy_length = 99;
-    sft_t sft;
-
-    if (ctx->backend->filter_request(ctx, slave) == 1) {
-        /* Filtered */
-        return 0;
-    }
-
-    sft.slave = slave;
-    sft.function = function + 0x80;;
-    sft.t_id = ctx->backend->prepare_response_tid(req, &dummy_length);
-    rsp_length = ctx->backend->build_response_basis(&sft, rsp);
-
-    /* Positive exception code */
-    if (exception_code < MODBUS_EXCEPTION_MAX) {
-        rsp[rsp_length++] = exception_code;
-        return send_msg(ctx, rsp, rsp_length);
-    } else {
-        errno = EINVAL;
-        return -1;
-    }
 }
 
 /* Reads IO status */
@@ -1330,11 +1337,6 @@ void modbus_get_timeout_end(modbus_t *ctx, struct timeval *timeout)
 void modbus_set_timeout_end(modbus_t *ctx, const struct timeval *timeout)
 {
     ctx->timeout_end = *timeout;
-}
-
-int modbus_get_header_length(modbus_t *ctx)
-{
-    return ctx->backend->header_length;
 }
 
 int modbus_connect(modbus_t *ctx)

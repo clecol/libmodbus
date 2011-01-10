@@ -57,6 +57,15 @@ case "${host_os}" in
 esac
 AM_CONDITIONAL(OS_WIN32, test "$os_win32" = "true")
 
+# Do we add RTAI to our build?
+AC_ARG_VAR(RTAI, Set RTAI Include Path)
+AM_CONDITIONAL([RTAI_ENABLED], test -n "$RTAI")
+if test -n "$RTAI" ; then
+   CXXFLAGS="$CXX_FLAGS -I$(RTAI)"
+fi
+AC_SUBST(CXXFLAGS)
+
+
 # Checks for programs.
 AC_PROG_CC
 AC_PROG_CXX

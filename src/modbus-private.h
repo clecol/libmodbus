@@ -58,9 +58,10 @@ MODBUS_BEGIN_DECLS
 #define _FC_READ_AND_WRITE_REGISTERS  0x17
 
 typedef enum {
-    _MODBUS_BACKEND_TYPE_RTU=0,
-    _MODBUS_BACKEND_TYPE_TCP
-} modbus_bakend_type_t;
+  _MODBUS_BACKEND_TYPE_RTU=0,
+  _MODBUS_BACKEND_TYPE_TCP=1,
+  _MODBUS_BACKEND_TYPE_RTAI=2
+} modbus_backend_type_t;
 
 /* This structure reduces the number of params in functions and so
  * optimizes the speed of execution (~ 37%). */
