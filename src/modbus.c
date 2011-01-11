@@ -317,10 +317,15 @@ static int receive_msg(modbus_t *ctx, int msg_length_computed,
       
   p_msg = msg;
   while (s_rc) {
-    //printf("in s_rc loop, msg_length = %d\n", msg_length);
-    read_rc = ctx->backend->recv(ctx, p_msg, length_to_read);
-    //printf("READ RC == %d\n", read_rc);
+      printf("in s_rc loop, msg_length = %d\n", msg_length);
+      read_rc = ctx->backend->recv(ctx, p_msg, length_to_read);
+      printf("READ RC == %d\n", read_rc);
 
+      // if no delay is set properly, we'll get this error
+      // and we just need to retry until we can read the message
+      if (rtai && read_rc == 65534)
+          read_rc = 0; 
+      
     // if rtai selected, read_rc:
     // ==0:  no bytes received, keep retrying
     // > 0: some bytes received, retry if we haven't received entire message
