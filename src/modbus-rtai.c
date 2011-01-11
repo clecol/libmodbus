@@ -172,7 +172,7 @@ ssize_t _modbus_rtai_send(modbus_t *ctx, const uint8_t *req, int req_length)
   // if the return value is negative, return that instead.
   modbus_rtai_t *ctx_rtai = ctx->backend_data;
   
-  int bytes_not_written = rt_spwrite(ctx_rtai->tty, (char*)req, req_length);
+  int bytes_not_written = rt_spwrite_timed(ctx_rtai->tty, (char*)req, req_length, DELAY_FOREVER);
   /* printf("on send: wanted to send %d bytes, BYTES NOT WRITTEN = %d, returning bytes written as %d\n", */
   /*        req_length, bytes_not_written, req_length - bytes_not_written); */
   if (bytes_not_written >= 0)
@@ -190,7 +190,7 @@ ssize_t _modbus_rtai_recv(modbus_t *ctx, uint8_t *rsp, int rsp_length)
   // if the return value is negative, return that instead
   modbus_rtai_t *ctx_rtai = ctx->backend_data;
   
-  int bytes_not_read = rt_spread(ctx_rtai->tty, (char*)rsp, rsp_length);
+  int bytes_not_read = rt_spread_timed(ctx_rtai->tty, (char*)rsp, rsp_length, DELAY_FOREVER);
   /* printf("on recv: wanted to recv %d bytes, BYTES NOT READ = %d, returning bytes read as %d\n", */
   /*        rsp_length, bytes_not_read, rsp_length - bytes_not_read); */
   if (bytes_not_read >= 0)
