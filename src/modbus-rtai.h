@@ -18,6 +18,7 @@
 #ifndef _MODBUS_RTAI_H_
 #define _MODBUS_RTAI_H_
 
+#include <rtai_serial.h>
 #include "modbus.h"
 
 /* Modbus_Application_Protocol_V1_1b.pdf Chapter 4 Section 1 Page 5
@@ -27,6 +28,6 @@
 
 modbus_t* modbus_new_rtai(uint32_t tty, uint32_t baud, uint32_t parity, 
                           uint32_t data_bits, uint32_t stop_bits,
-                          int mode, int fifotrig);
+                          int mode, int fifotrig, RTIME delay);
 
 #endif /* _MODBUS_RTAI_H_ */

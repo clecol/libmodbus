@@ -18,6 +18,7 @@
 #ifndef _MODBUS_RTAI_PRIVATE_H_
 #define _MODBUS_RTAI_PRIVATE_H_
 
+#include <rtai_serial.h>
 #include <stdint.h>
 
 #define _MODBUS_RTAI_HEADER_LENGTH      1
@@ -27,13 +28,14 @@
 #define _MODBUS_RTAI_CHECKSUM_LENGTH    2
 
 typedef struct _modbus_rtai {
-  uint32_t tty;
-  uint32_t baud;
-  uint32_t data_bits;
-  uint32_t stop_bits;
-  uint32_t parity;
-  int mode;
-  int fifotrig;
+    uint32_t tty;
+    uint32_t baud;
+    uint32_t data_bits;
+    uint32_t stop_bits;
+    uint32_t parity;
+    int mode;
+    int fifotrig;
+    RTIME delay;
 } modbus_rtai_t;
 
 #endif /* _MODBUS_RTAI_PRIVATE_H_ */
