@@ -321,9 +321,10 @@ static int receive_msg(modbus_t *ctx, int msg_length_computed,
       read_rc = ctx->backend->recv(ctx, p_msg, length_to_read);
       printf("READ RC == %d\n", read_rc);
 
-      // if no delay is set properly, we'll get this error
+      // both of these indicate a timeout
       // and we just need to retry until we can read the message
-      if (rtai && read_rc == 65534)
+      if (rtai &&
+          (read_rc == 65534 || read_rc == 65533))
           read_rc = 0; 
       
     // if rtai selected, read_rc:
