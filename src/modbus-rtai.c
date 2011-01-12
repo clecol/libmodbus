@@ -171,14 +171,15 @@ ssize_t _modbus_rtai_send(modbus_t *ctx, const uint8_t *req, int req_length)
   //
   // if the return value is negative, return that instead.
   modbus_rtai_t *ctx_rtai = ctx->backend_data;
-  
-  int bytes_not_written = rt_spwrite_timed(ctx_rtai->tty, (char*)req, req_length, ctx_rtai->delay);
-  /* printf("on send: wanted to send %d bytes, BYTES NOT WRITTEN = %d, returning bytes written as %d\n", */
-  /*        req_length, bytes_not_written, req_length - bytes_not_written); */
-  if (bytes_not_written >= 0)
-    return req_length - bytes_not_written;
+
+  int ret = rt_spwrite_timed(ctx_rtai->tty, (char*)req, req_length, ctx_rtai->delay);
+  //printf("on send: wanted to send %d bytes, return value = %d, returning bytes written as %d\n",
+  //req_length, ret, req_length);
+
+  if (ret == 0) // successful, return rsp_length
+      return req_length;
   else
-    return bytes_not_written; // error code
+      return ret; // error 
 }
 
 ssize_t _modbus_rtai_recv(modbus_t *ctx, uint8_t *rsp, int rsp_length)
@@ -189,14 +190,16 @@ ssize_t _modbus_rtai_recv(modbus_t *ctx, uint8_t *rsp, int rsp_length)
   //
   // if the return value is negative, return that instead
   modbus_rtai_t *ctx_rtai = ctx->backend_data;
-  
-  int bytes_not_read = rt_spread_timed(ctx_rtai->tty, (char*)rsp, rsp_length, ctx_rtai->delay);
-  /* printf("on recv: wanted to recv %d bytes, BYTES NOT READ = %d, returning bytes read as %d\n", */
-  /*        rsp_length, bytes_not_read, rsp_length - bytes_not_read); */
-  if (bytes_not_read >= 0)
-    return rsp_length - bytes_not_read;
+
+  //printf("before read\n");
+  int ret = rt_spread_timed(ctx_rtai->tty, (char*)rsp, rsp_length, ctx_rtai->delay);
+  //printf("on recv: wanted to recv %d bytes, return value = %d, returning bytes read as %d\n",
+  //     rsp_length, ret, rsp_length);
+
+  if (ret == 0) // successful, return rsp_length
+      return rsp_length;
   else
-    return bytes_not_read; // error code
+      return ret; // error 
 }
 
 int _modbus_rtai_flush(modbus_t *);
