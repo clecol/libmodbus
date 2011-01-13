@@ -259,7 +259,7 @@ static int receive_msg(modbus_t *ctx, int msg_length_computed,
   int state;
   int msg_length = 0;
 
-  printf("msg_length_computed = %d\n", msg_length_computed);
+  //printf("msg_length_computed = %d\n", msg_length_computed);
   
   if (ctx->debug) {
     if (msg_type == MSG_INDICATION) {
@@ -317,9 +317,9 @@ static int receive_msg(modbus_t *ctx, int msg_length_computed,
       
   p_msg = msg;
   while (s_rc) {
-      printf("in s_rc loop, msg_length = %d\n", msg_length);
+      //printf("in s_rc loop, msg_length = %d\n", msg_length);
       read_rc = ctx->backend->recv(ctx, p_msg, length_to_read);
-      printf("READ RC == %d\n", read_rc);
+      //printf("READ RC == %d\n", read_rc);
 
       // both of these indicate a timeout
       // and we just need to retry until we can read the message
