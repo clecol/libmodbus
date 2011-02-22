@@ -325,7 +325,8 @@ static int receive_msg(modbus_t *ctx, int msg_length_computed,
       // and we just need to retry until we can read the message
       if (rtai &&
           (read_rc == 65534 || read_rc == 65533))
-          read_rc = 0; 
+          return -1;
+          //read_rc = 0; 
       
     // if rtai selected, read_rc:
     // ==0:  no bytes received, keep retrying

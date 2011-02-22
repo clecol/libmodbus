@@ -313,7 +313,7 @@ const modbus_backend_t _modbus_rtai_backend = {
    - parity(rtai_serial.h): RT_SP_PARITY_EVEN, RT_SP_PARITY_NONE, RT_SP_PARITY_ODD,
                             RT_SP_PARITY_HIGH, RT_SP_PARITY_LOW (rtai_serial.h)
    - data_bits: 5, 6, 7, 8
-   - stop_bits: 1, 2
+   - stop_bits 1, 2
    - mode: RT_SP_NO_HAND_SHAKE, RT_SP_DSR_ON_TX, RT_SP_HW_FLOW
    - fifotrig (rtai_serial.h): RT_SP_FIFO_DISABLE, RT_SP_FIFO_SIZE_1, RT_SP_FIFO_SIZE_4,
                                RT_SP_FIFO_SIZE_8, RT_SP_FIFO_SIZE_14 
@@ -332,19 +332,22 @@ modbus_t* modbus_new_rtai(uint32_t tty, uint32_t baud, uint32_t parity,
     ctx->backend_data = (modbus_rtai_t *) malloc(sizeof(modbus_rtai_t));
     ctx_rtai = (modbus_rtai_t *)ctx->backend_data;
 
-
+    ctx_rtai->tty = tty;
     ctx_rtai->baud = baud;
-    if (parity == RT_SP_PARITY_EVEN || parity == RT_SP_PARITY_NONE ||
-        parity == RT_SP_PARITY_ODD || parity == RT_SP_PARITY_HIGH ||
-        parity == RT_SP_PARITY_LOW)
-        ctx_rtai->parity = parity;
-    else {
-        modbus_free(ctx);
-        errno = EINVAL;
-        return NULL;
-    }
+    ctx_rtai->parity = parity;
+    /* if (parity == RT_SP_PARITY_EVEN || parity == RT_SP_PARITY_NONE || */
+    /*     parity == RT_SP_PARITY_ODD || parity == RT_SP_PARITY_HIGH || */
+    /*     parity == RT_SP_PARITY_LOW) */
+    /*     ctx_rtai->parity = parity; */
+    /* else { */
+    /*     modbus_free(ctx); */
+    /*     errno = EINVAL; */
+    /*     return NULL; */
+    /*}*/
     ctx_rtai->data_bits = data_bits;
     ctx_rtai->stop_bits = stop_bits;
+    ctx_rtai->mode = mode;
+    ctx_rtai->fifotrig = fifotrig;
     ctx_rtai->delay = delay;
     
     return ctx;
